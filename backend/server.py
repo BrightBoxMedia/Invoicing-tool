@@ -16,11 +16,11 @@ from decimal import Decimal
 import re
 from pathlib import Path
 from dotenv import load_dotenv
-from reportlab.lib.pagesizes import A4
+from reportlab.lib.pagesizes import A4, letter
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import mm
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image as RLImage
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
 from reportlab.lib.enums import TA_LEFT, TA_RIGHT, TA_CENTER
 from io import BytesIO
 from enum import Enum
@@ -71,6 +71,7 @@ class UserRole(str, Enum):
 class InvoiceType(str, Enum):
     PROFORMA = "proforma"
     TAX_INVOICE = "tax_invoice"
+    RUNNING_ACCOUNT = "running_account"
 
 class InvoiceStatus(str, Enum):
     DRAFT = "draft"
@@ -148,6 +149,8 @@ class Invoice(BaseModel):
     client_id: str
     client_name: str
     invoice_type: InvoiceType
+    ra_sequence: Optional[int] = None  # For running account invoices (RA1, RA2, etc.)
+    include_gst: bool = True  # Whether to include GST in this invoice
     items: List[BOQItem]
     subtotal: float
     gst_amount: float
@@ -171,6 +174,16 @@ class ActivityLog(BaseModel):
     project_id: Optional[str] = None
     invoice_id: Optional[str] = None
     timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+class CompanySettings(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    company_name: str = "Activus"
+    logo_path: Optional[str] = None
+    address: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    website: Optional[str] = None
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 # Excel Parser Class
 class ExcelParser:
@@ -398,46 +411,74 @@ class PDFGenerator:
         self.page_size = A4
         self.margin = 20 * mm
         
-    async def generate_invoice_pdf(self, invoice: Invoice, project: Project, client: ClientInfo) -> BytesIO:
-        buffer = BytesIO()
-        doc = SimpleDocTemplate(
-            buffer,
-            pagesize=self.page_size,
-            rightMargin=self.margin,
-            leftMargin=self.margin,
-            topMargin=self.margin,
-            bottomMargin=self.margin
-        )
-        
-        # Build PDF content
-        elements = []
+    async def generate_invoice_pdf(self, invoice: Invoice, project: Project, client: ClientInfo, company_settings: Optional[dict] = None):
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=letter)
         styles = getSampleStyleSheet()
+        elements = []
         
-        # Add custom styles
+        # Custom styles
         title_style = ParagraphStyle(
             'CustomTitle',
-            parent=styles['Heading1'],
+            parent=styles['Title'],
             fontSize=18,
-            textColor=colors.HexColor('#1f4e79'),
-            alignment=TA_CENTER,
-            spaceAfter=20
+            spaceAfter=30,
+            textColor=colors.HexColor('#1f4e79')
         )
         
         header_style = ParagraphStyle(
             'CustomHeader',
             parent=styles['Heading2'],
             fontSize=14,
-            textColor=colors.HexColor('#1f4e79'),
-            spaceAfter=10
+            spaceAfter=12,
+            textColor=colors.HexColor('#1f4e79')
         )
         
-        # Company Header
-        elements.append(Paragraph("ACTIVUS INDUSTRIAL DESIGN & BUILD LLP", title_style))
-        elements.append(Paragraph("One Stop Solution for Industrial Projects", styles['Normal']))
+        # Get company settings for logo
+        if company_settings:
+            logo_path = company_settings.get('logo_path')
+        else:
+            # Fallback to default if company settings are not available
+            logo_path = None
+        
+        # Header with logo (if available) and company info
+        header_data = []
+        
+        # Try to add logo if available
+        logo_cell_content = []
+        if logo_path and os.path.exists(logo_path):
+            try:
+                logo = Image(logo_path, width=80, height=60)
+                logo_cell_content.append(logo)
+            except:
+                # If logo fails to load, add company name instead
+                logo_cell_content.append(Paragraph("ACTIVUS", title_style))
+        else:
+            logo_cell_content.append(Paragraph("ACTIVUS", title_style))
+        
+        company_info = [
+            Paragraph("ACTIVUS CORPORATION", styles['Normal']),
+            Paragraph("Invoice Management System", styles['Normal']),
+            Paragraph("Email: info@activus.com", styles['Normal'])
+        ]
+        
+        header_data.append([logo_cell_content, company_info])
+        
+        header_table = Table(header_data, colWidths=[100*mm, 100*mm])
+        header_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('ALIGN', (0, 0), (0, 0), 'LEFT'),
+            ('ALIGN', (1, 0), (1, 0), 'RIGHT'),
+        ]))
+        
+        elements.append(header_table)
         elements.append(Spacer(1, 20))
         
         # Invoice Title
-        invoice_title = f"{invoice.invoice_type.value.upper()} INVOICE"
+        invoice_title = f"{invoice.invoice_type.upper()} INVOICE"
+        if invoice.invoice_type == InvoiceType.RUNNING_ACCOUNT:
+            invoice_title = f"RUNNING ACCOUNT INVOICE - RA{invoice.ra_sequence}"
+        
         elements.append(Paragraph(invoice_title, title_style))
         elements.append(Spacer(1, 20))
         
@@ -497,10 +538,13 @@ class PDFGenerator:
         
         # Totals
         totals_data = [
-            ['Subtotal:', f"₹{invoice.subtotal:,.2f}"],
-            ['GST (18%):', f"₹{invoice.gst_amount:,.2f}"],
-            ['Total Amount:', f"₹{invoice.total_amount:,.2f}"]
+            ['Subtotal:', f"₹{invoice.subtotal:,.2f}"]
         ]
+        
+        if invoice.include_gst:
+            totals_data.append(['GST (18%):', f"₹{invoice.gst_amount:,.2f}"])
+        
+        totals_data.append(['Total Amount:', f"₹{invoice.total_amount:,.2f}"])
         
         totals_table = Table(totals_data, colWidths=[50*mm, 50*mm])
         totals_table.setStyle(TableStyle([
@@ -693,6 +737,112 @@ async def upload_boq(
             detail=f"Failed to parse Excel file. Please ensure it's a valid BOQ format. Error: {str(e)}"
         )
 
+@api_router.post("/upload-logo")
+async def upload_logo(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Upload company logo"""
+    if current_user["role"] not in ["super_admin"]:
+        raise HTTPException(status_code=403, detail="Only super admin can upload logo")
+    
+    # Validate file type
+    allowed_types = ["image/jpeg", "image/jpg", "image/png", "image/gif"]
+    if file.content_type not in allowed_types:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid file type. Please upload an image file. Received: {file.content_type}"
+        )
+    
+    # Validate file extension
+    allowed_extensions = ['.jpg', '.jpeg', '.png', '.gif']
+    file_extension = os.path.splitext(file.filename)[1].lower()
+    if file_extension not in allowed_extensions:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid file extension. Please upload an image file with .jpg, .jpeg, .png, or .gif extension"
+        )
+    
+    try:
+        # Read file content
+        file_content = await file.read()
+        if len(file_content) == 0:
+            raise HTTPException(status_code=400, detail="Empty file uploaded")
+        
+        # Create uploads directory if it doesn't exist
+        upload_dir = "uploads/logos"
+        os.makedirs(upload_dir, exist_ok=True)
+        
+        # Generate unique filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"logo_{timestamp}{file_extension}"
+        file_path = os.path.join(upload_dir, filename)
+        
+        # Save file
+        with open(file_path, "wb") as f:
+            f.write(file_content)
+        
+        # Update or create company settings
+        company_settings = await db.company_settings.find_one({})
+        if company_settings:
+            # Update existing settings
+            await db.company_settings.update_one(
+                {"_id": company_settings["_id"]},
+                {"$set": {"logo_path": file_path, "updated_at": datetime.utcnow()}}
+            )
+        else:
+            # Create new settings
+            new_settings = CompanySettings(logo_path=file_path)
+            await db.company_settings.insert_one(new_settings.dict())
+        
+        await log_activity(
+            current_user["id"], current_user["email"], current_user["role"],
+            "logo_uploaded", f"Uploaded company logo: {filename}"
+        )
+        
+        return {"message": "Logo uploaded successfully", "logo_path": file_path}
+        
+    except Exception as e:
+        logger.error(f"Error uploading logo: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to upload logo")
+
+@api_router.get("/company-settings")
+async def get_company_settings(current_user: dict = Depends(get_current_user)):
+    """Get company settings including logo"""
+    settings = await db.company_settings.find_one({})
+    if settings:
+        return CompanySettings(**settings)
+    else:
+        # Return default settings
+        return CompanySettings()
+
+@api_router.put("/company-settings")
+async def update_company_settings(
+    settings: CompanySettings,
+    current_user: dict = Depends(get_current_user)
+):
+    """Update company settings"""
+    if current_user["role"] not in ["super_admin"]:
+        raise HTTPException(status_code=403, detail="Only super admin can update company settings")
+    
+    existing_settings = await db.company_settings.find_one({})
+    if existing_settings:
+        # Update existing settings
+        await db.company_settings.update_one(
+            {"_id": existing_settings["_id"]},
+            {"$set": settings.dict()}
+        )
+    else:
+        # Create new settings
+        await db.company_settings.insert_one(settings.dict())
+    
+    await log_activity(
+        current_user["id"], current_user["email"], current_user["role"],
+        "company_settings_updated", "Updated company settings"
+    )
+    
+    return {"message": "Company settings updated successfully"}
+
 @api_router.post("/clients", response_model=dict)
 async def create_client(client_data: ClientInfo, current_user: dict = Depends(get_current_user)):
     await db.clients.insert_one(client_data.dict())
@@ -765,12 +915,40 @@ async def get_project(project_id: str, current_user: dict = Depends(get_current_
 async def create_invoice(invoice_data: Invoice, current_user: dict = Depends(get_current_user)):
     # Generate invoice number
     invoice_count = await db.invoices.count_documents({})
-    invoice_data.invoice_number = f"INV-{datetime.now().year}-{invoice_count + 1:04d}"
+    
+    # Handle running account invoice numbering
+    if invoice_data.invoice_type == InvoiceType.RUNNING_ACCOUNT:
+        # Find the highest RA sequence for this project
+        existing_ra_invoices = await db.invoices.find({
+            "project_id": invoice_data.project_id,
+            "invoice_type": "running_account"
+        }).sort("ra_sequence", -1).limit(1).to_list(1)
+        
+        if existing_ra_invoices:
+            invoice_data.ra_sequence = existing_ra_invoices[0]["ra_sequence"] + 1
+        else:
+            invoice_data.ra_sequence = 1
+            
+        invoice_data.invoice_number = f"RA{invoice_data.ra_sequence}-{datetime.now().year}-{invoice_count + 1:04d}"
+        
+        # GST logic for running account: RA1 might skip GST, RA2+ should include GST
+        if invoice_data.ra_sequence == 1 and not invoice_data.include_gst:
+            # RA1 with GST skipped
+            invoice_data.include_gst = False
+        else:
+            # RA2+ should include GST
+            invoice_data.include_gst = True
+    else:
+        invoice_data.invoice_number = f"INV-{datetime.now().year}-{invoice_count + 1:04d}"
+    
     invoice_data.created_by = current_user["id"]
     
     # Calculate totals
     invoice_data.subtotal = sum(item.amount for item in invoice_data.items)
-    invoice_data.gst_amount = invoice_data.subtotal * 0.18  # 18% GST
+    if invoice_data.include_gst:
+        invoice_data.gst_amount = invoice_data.subtotal * 0.18  # 18% GST
+    else:
+        invoice_data.gst_amount = 0.0
     invoice_data.total_amount = invoice_data.subtotal + invoice_data.gst_amount
     
     await db.invoices.insert_one(invoice_data.dict())
@@ -791,12 +969,9 @@ async def get_invoices(current_user: dict = Depends(get_current_user)):
 @api_router.get("/invoices/{invoice_id}/pdf")
 async def download_invoice_pdf(invoice_id: str, current_user: dict = Depends(get_current_user)):
     try:
-        if not invoice_id or len(invoice_id.strip()) == 0:
-            raise HTTPException(status_code=400, detail="Invoice ID is required")
-        
         invoice = await db.invoices.find_one({"id": invoice_id})
         if not invoice:
-            raise HTTPException(status_code=404, detail=f"Invoice with ID {invoice_id} not found")
+            raise HTTPException(status_code=404, detail="Invoice not found")
         
         project = await db.projects.find_one({"id": invoice["project_id"]})
         if not project:
@@ -806,11 +981,15 @@ async def download_invoice_pdf(invoice_id: str, current_user: dict = Depends(get
         if not client:
             raise HTTPException(status_code=404, detail="Related client not found")
         
+        # Get company settings for logo
+        company_settings = await db.company_settings.find_one({})
+        
         pdf_generator = PDFGenerator()
         pdf_buffer = await pdf_generator.generate_invoice_pdf(
             Invoice(**invoice),
             Project(**project),
-            ClientInfo(**client)
+            ClientInfo(**client),
+            company_settings
         )
         
         await log_activity(
@@ -835,27 +1014,68 @@ async def get_dashboard_stats(current_user: dict = Depends(get_current_user)):
     total_projects = await db.projects.count_documents({})
     total_invoices = await db.invoices.count_documents({})
     
-    # Calculate financial stats
-    pipeline = [
+    # Calculate project financial stats
+    project_pipeline = [
         {"$group": {
             "_id": None,
-            "total_invoiced": {"$sum": "$total_amount"},
+            "total_project_value": {"$sum": "$total_project_value"},
             "total_advance": {"$sum": "$advance_received"}
         }}
     ]
     
-    financial_stats = await db.projects.aggregate(pipeline).to_list(1)
-    total_invoiced = financial_stats[0]["total_invoiced"] if financial_stats else 0
-    total_advance = financial_stats[0]["total_advance"] if financial_stats else 0
+    project_stats = await db.projects.aggregate(project_pipeline).to_list(1)
+    total_project_value = project_stats[0]["total_project_value"] if project_stats else 0
+    total_advance = project_stats[0]["total_advance"] if project_stats else 0
     
-    pending_payment = total_invoiced - total_advance
+    # Calculate invoice financial stats
+    invoice_pipeline = [
+        {"$group": {
+            "_id": None,
+            "total_invoiced_value": {"$sum": "$total_amount"}
+        }}
+    ]
+    
+    invoice_stats = await db.invoices.aggregate(invoice_pipeline).to_list(1)
+    total_invoiced = invoice_stats[0]["total_invoiced_value"] if invoice_stats else 0
+    
+    # Calculate payment status breakdown
+    payment_status_pipeline = [
+        {"$group": {
+            "_id": "$status",
+            "count": {"$sum": 1},
+            "amount": {"$sum": "$total_amount"}
+        }}
+    ]
+    
+    payment_breakdown = await db.invoices.aggregate(payment_status_pipeline).to_list(10)
+    
+    # Calculate pending payment (invoiced but not paid)
+    pending_payment = 0
+    paid_amount = 0
+    draft_amount = 0
+    
+    for item in payment_breakdown:
+        if item["_id"] in ["draft", "pending_review", "reviewed", "approved"]:
+            pending_payment += item["amount"]
+        elif item["_id"] == "paid":
+            paid_amount += item["amount"]
+        if item["_id"] == "draft":
+            draft_amount += item["amount"]
+    
+    # Calculate project completion percentage
+    completion_percentage = (total_invoiced / total_project_value * 100) if total_project_value > 0 else 0
     
     return {
         "total_projects": total_projects,
         "total_invoices": total_invoices,
+        "total_project_value": total_project_value,
         "total_invoiced_value": total_invoiced,
-        "advance_received": total_advance,
-        "pending_payment": pending_payment
+        "total_advance_received": total_advance,
+        "pending_payment": pending_payment,
+        "paid_amount": paid_amount,
+        "draft_amount": draft_amount,
+        "completion_percentage": round(completion_percentage, 2),
+        "payment_breakdown": {item["_id"]: {"count": item["count"], "amount": item["amount"]} for item in payment_breakdown}
     }
 
 @api_router.get("/activity-logs")

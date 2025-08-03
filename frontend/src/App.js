@@ -117,9 +117,14 @@ const Navbar = ({ user, onLogout }) => {
                 Clients
               </Link>
               {user.role === 'super_admin' && (
-                <Link to="/logs" className="text-gray-700 hover:text-blue-600 font-medium">
-                  Activity Logs
-                </Link>
+                <>
+                  <Link to="/logs" className="text-gray-700 hover:text-blue-600 font-medium">
+                    Activity Logs
+                  </Link>
+                  <Link to="/settings" className="text-gray-700 hover:text-blue-600 font-medium">
+                    Settings
+                  </Link>
+                </>
               )}
             </div>
             
@@ -206,8 +211,8 @@ const Dashboard = () => {
               </div>
             </div>
             <div className="ml-4">
-              <h3 className="text-lg font-semibold text-gray-900">₹{(stats.total_invoiced_value || 0).toLocaleString()}</h3>
-              <p className="text-gray-600">Total Invoiced</p>
+              <h3 className="text-lg font-semibold text-gray-900">₹{(stats.total_project_value || 0).toLocaleString()}</h3>
+              <p className="text-gray-600">Total Project Value</p>
             </div>
           </div>
         </div>
@@ -216,16 +221,53 @@ const Dashboard = () => {
           <div className="flex items-center">
             <div className="flex-shrink-0">
               <div className="w-8 h-8 bg-orange-500 rounded-md flex items-center justify-center">
-                <span className="text-white text-sm font-bold">⏳</span>
+                <span className="text-white text-sm font-bold">%</span>
               </div>
             </div>
             <div className="ml-4">
-              <h3 className="text-lg font-semibold text-gray-900">₹{(stats.pending_payment || 0).toLocaleString()}</h3>
-              <p className="text-gray-600">Pending Payment</p>
+              <h3 className="text-lg font-semibold text-gray-900">{stats.completion_percentage || 0}%</h3>
+              <p className="text-gray-600">Project Completion</p>
             </div>
           </div>
         </div>
       </div>
+
+      {/* Financial Overview */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+        <div className="bg-white p-6 rounded-lg shadow-md border border-gray-200">
+          <h4 className="text-md font-semibold text-gray-900 mb-4">Invoiced Amount</h4>
+          <p className="text-2xl font-bold text-green-600">₹{(stats.total_invoiced_value || 0).toLocaleString()}</p>
+          <p className="text-sm text-gray-500 mt-1">Total amount invoiced</p>
+        </div>
+        
+        <div className="bg-white p-6 rounded-lg shadow-md border border-gray-200">
+          <h4 className="text-md font-semibold text-gray-900 mb-4">Pending Payment</h4>
+          <p className="text-2xl font-bold text-yellow-600">₹{(stats.pending_payment || 0).toLocaleString()}</p>
+          <p className="text-sm text-gray-500 mt-1">Outstanding invoices</p>
+        </div>
+        
+        <div className="bg-white p-6 rounded-lg shadow-md border border-gray-200">
+          <h4 className="text-md font-semibold text-gray-900 mb-4">Paid Amount</h4>
+          <p className="text-2xl font-bold text-blue-600">₹{(stats.paid_amount || 0).toLocaleString()}</p>
+          <p className="text-sm text-gray-500 mt-1">Payments received</p>
+        </div>
+      </div>
+
+      {/* Payment Status Breakdown */}
+      {stats.payment_breakdown && (
+        <div className="bg-white p-6 rounded-lg shadow-md border border-gray-200">
+          <h4 className="text-lg font-semibold text-gray-900 mb-4">Payment Status Breakdown</h4>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            {Object.entries(stats.payment_breakdown).map(([status, data]) => (
+              <div key={status} className="text-center">
+                <p className="text-sm font-medium text-gray-700 capitalize">{status.replace('_', ' ')}</p>
+                <p className="text-lg font-bold text-gray-900">{data.count}</p>
+                <p className="text-xs text-gray-500">₹{data.amount.toLocaleString()}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -585,6 +627,7 @@ const Invoices = () => {
   const [showModal, setShowModal] = useState(false);
   const [selectedProject, setSelectedProject] = useState('');
   const [invoiceType, setInvoiceType] = useState('proforma');
+  const [includeGst, setIncludeGst] = useState(true);
   const [selectedItems, setSelectedItems] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -644,7 +687,10 @@ const Invoices = () => {
       
       // Calculate totals
       const subtotal = selectedItems.reduce((sum, item) => sum + item.amount, 0);
-      const gstAmount = subtotal * 0.18; // 18% GST
+      let gstAmount = 0;
+      if (includeGst) {
+        gstAmount = subtotal * 0.18; // 18% GST
+      }
       const totalAmount = subtotal + gstAmount;
       
       const invoiceData = {
@@ -653,6 +699,7 @@ const Invoices = () => {
         client_id: project.client_id,
         client_name: project.client_name,
         invoice_type: invoiceType,
+        include_gst: includeGst,
         items: selectedItems,
         subtotal: subtotal,
         gst_amount: gstAmount,
@@ -669,6 +716,7 @@ const Invoices = () => {
       setSelectedProject('');
       setSelectedItems([]);
       setInvoiceType('proforma');
+      setIncludeGst(true);
       fetchInvoices();
     } catch (error) {
       console.error('Invoice creation error:', error);
@@ -757,9 +805,14 @@ const Invoices = () => {
                   <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
                     invoice.invoice_type === 'proforma' 
                       ? 'bg-blue-100 text-blue-800' 
+                      : invoice.invoice_type === 'running_account'
+                      ? 'bg-purple-100 text-purple-800'
                       : 'bg-green-100 text-green-800'
                   }`}>
-                    {invoice.invoice_type}
+                    {invoice.invoice_type === 'running_account' 
+                      ? `RA${invoice.ra_sequence || ''}`
+                      : invoice.invoice_type
+                    }
                   </span>
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap">
@@ -833,7 +886,25 @@ const Invoices = () => {
                 >
                   <option value="proforma">Proforma Invoice</option>
                   <option value="tax_invoice">Tax Invoice</option>
+                  <option value="running_account">Running Account (RA)</option>
                 </select>
+              </div>
+
+              <div className="mb-4">
+                <label className="flex items-center">
+                  <input
+                    type="checkbox"
+                    checked={includeGst}
+                    onChange={(e) => setIncludeGst(e.target.checked)}
+                    className="mr-2 h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                  />
+                  <span className="text-sm font-medium text-gray-700">Include GST (18%)</span>
+                </label>
+                {invoiceType === 'running_account' && (
+                  <p className="text-xs text-gray-500 mt-1">
+                    Note: For RA1, you can skip GST if it's an advance. RA2+ typically includes GST.
+                  </p>
+                )}
               </div>
 
               {selectedItems.length > 0 && (
@@ -1161,6 +1232,223 @@ const ActivityLogs = () => {
   );
 };
 
+const Settings = () => {
+  const [companySettings, setCompanySettings] = useState({
+    company_name: 'Activus',
+    logo_path: null,
+    address: '',
+    phone: '',
+    email: '',
+    website: ''
+  });
+  const [logoFile, setLogoFile] = useState(null);
+  const [logoPreview, setLogoPreview] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [uploading, setUploading] = useState(false);
+
+  useEffect(() => {
+    fetchCompanySettings();
+  }, []);
+
+  const fetchCompanySettings = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await axios.get(`${API}/company-settings`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setCompanySettings(response.data);
+      if (response.data.logo_path) {
+        // Note: In a real app, you'd serve the logo via a static endpoint
+        setLogoPreview(response.data.logo_path);
+      }
+    } catch (error) {
+      console.error('Error fetching company settings:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleLogoChange = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      setLogoFile(file);
+      
+      // Create preview
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        setLogoPreview(e.target.result);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const handleLogoUpload = async () => {
+    if (!logoFile) {
+      alert('Please select a logo file');
+      return;
+    }
+
+    setUploading(true);
+    const formData = new FormData();
+    formData.append('file', logoFile);
+
+    try {
+      const token = localStorage.getItem('token');
+      const response = await axios.post(`${API}/upload-logo`, formData, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'multipart/form-data'
+        }
+      });
+
+      alert('Logo uploaded successfully!');
+      setLogoFile(null);
+      fetchCompanySettings();
+    } catch (error) {
+      alert('Error uploading logo: ' + (error.response?.data?.detail || error.message));
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleSettingsUpdate = async (e) => {
+    e.preventDefault();
+    try {
+      const token = localStorage.getItem('token');
+      await axios.put(`${API}/company-settings`, companySettings, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      alert('Company settings updated successfully!');
+    } catch (error) {
+      alert('Error updating settings: ' + (error.response?.data?.detail || error.message));
+    }
+  };
+
+  if (loading) return <div className="flex justify-center py-8"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div></div>;
+
+  return (
+    <div className="p-6">
+      <h2 className="text-2xl font-bold text-gray-900 mb-6">Company Settings</h2>
+      
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        {/* Logo Upload Section */}
+        <div className="bg-white p-6 rounded-lg shadow-md border border-gray-200">
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">Company Logo</h3>
+          
+          {logoPreview && (
+            <div className="mb-4">
+              <p className="text-sm text-gray-600 mb-2">Current Logo:</p>
+              <div className="w-32 h-24 border border-gray-300 rounded flex items-center justify-center bg-gray-50">
+                <img 
+                  src={logoPreview} 
+                  alt="Company Logo" 
+                  className="max-w-full max-h-full object-contain"
+                  onError={(e) => {
+                    e.target.style.display = 'none';
+                    e.target.nextSibling.style.display = 'block';
+                  }}
+                />
+                <span className="text-gray-500 text-sm" style={{display: 'none'}}>Logo Preview</span>
+              </div>
+            </div>
+          )}
+          
+          <div className="mb-4">
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Upload New Logo
+            </label>
+            <input
+              type="file"
+              accept="image/*"
+              onChange={handleLogoChange}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              Supported formats: JPG, PNG, GIF. Max size: 5MB
+            </p>
+          </div>
+          
+          <button
+            onClick={handleLogoUpload}
+            disabled={!logoFile || uploading}
+            className={`w-full py-2 px-4 rounded-md font-medium ${
+              logoFile && !uploading
+                ? 'bg-blue-600 text-white hover:bg-blue-700'
+                : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+            }`}
+          >
+            {uploading ? 'Uploading...' : 'Upload Logo'}
+          </button>
+        </div>
+
+        {/* Company Information Section */}
+        <div className="bg-white p-6 rounded-lg shadow-md border border-gray-200">
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">Company Information</h3>
+          
+          <form onSubmit={handleSettingsUpdate} className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Company Name</label>
+              <input
+                type="text"
+                value={companySettings.company_name}
+                onChange={(e) => setCompanySettings({...companySettings, company_name: e.target.value})}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+              />
+            </div>
+            
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Address</label>
+              <textarea
+                value={companySettings.address}
+                onChange={(e) => setCompanySettings({...companySettings, address: e.target.value})}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+                rows="3"
+              />
+            </div>
+            
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Phone</label>
+              <input
+                type="tel"
+                value={companySettings.phone}
+                onChange={(e) => setCompanySettings({...companySettings, phone: e.target.value})}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+              />
+            </div>
+            
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
+              <input
+                type="email"
+                value={companySettings.email}
+                onChange={(e) => setCompanySettings({...companySettings, email: e.target.value})}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+              />
+            </div>
+            
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Website</label>
+              <input
+                type="url"
+                value={companySettings.website}
+                onChange={(e) => setCompanySettings({...companySettings, website: e.target.value})}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+              />
+            </div>
+            
+            <button
+              type="submit"
+              className="w-full bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 font-medium"
+            >
+              Update Settings
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const App = () => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -1208,7 +1496,10 @@ const App = () => {
             <Route path="/invoices" element={<Invoices />} />
             <Route path="/clients" element={<Clients />} />
             {user.role === 'super_admin' && (
-              <Route path="/logs" element={<ActivityLogs />} />
+              <>
+                <Route path="/logs" element={<ActivityLogs />} />
+                <Route path="/settings" element={<Settings />} />
+              </>
             )}
           </Routes>
         </main>
